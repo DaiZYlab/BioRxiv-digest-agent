@@ -1,12 +1,10 @@
-name: Daily Scientific Literature Digest
+name: Daily BioRxiv Digest
 
 on:
   schedule:
-    # Runs at 12:00 UTC every day.
-    # Check current UTC time and adjust this cron schedule if 7 AM in your local time is different.
-    # Example: '0 10 * * *' runs at 10:00 UTC.
-    - cron: '0 12 * * *'
-  
+    # 13:00 UTC = 7:00 AM CST (St. Louis Time)
+    - cron: '0 13 * * *'
+   
   # Allows manual testing from the GitHub Actions tab
   workflow_dispatch:
 
@@ -23,15 +21,19 @@ jobs:
           python-version: '3.x'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          # We explicitly install requests for the BioRxiv script
+          pip install requests
+          # If you have other requirements, this installs them too
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
       - name: Run Digest Agent and Send Email
         env:
           # --- Environment Variables (Secrets) ---
-          # These must be set in your GitHub Repository Secrets
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-          EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }} # Comma-separated string of emails
-          ENTREZ_EMAIL: ${{ secrets.ENTREZ_EMAIL }}
+          EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
+          # Note: ENTREZ_EMAIL is removed as BioRxiv does not use it.
           # ---------------------------------------
         run: python daily_digest_agent.py
