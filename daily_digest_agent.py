@@ -17,7 +17,7 @@ else:
 
 # SEARCH CONFIGURATION
 # Note: BioRxiv search is done locally. We download yesterday's papers and check these words.
-KEYWORDS = ["lung endothelial cell", "pulmonary vasculature", "pulmonary hypertension", "lung development", "right heart"]
+KEYWORDS = ["lung endothelial cell", "pulmonary vasculature", "pulmonary hypertension", "lung development", "right heart", "pulmonary endothelium"]
 # ---------------------
 
 def fetch_biorxiv_articles():
