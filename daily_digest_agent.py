@@ -1,97 +1,97 @@
 import smtplib
+import requests  # CHANGED: Replaces Bio.Entrez
+import os
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from Bio import Entrez
 from datetime import datetime, timedelta
-import os
 
-# --- CONFIGURATION: Reading from Environment Variables for Security ---
-# These are loaded from GitHub Secrets (or environment variables in PythonAnywhere)
+# --- CONFIGURATION ---
 EMAIL_SENDER = os.environ.get("EMAIL_SENDER")
-EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD") 
-# EMAIL_RECEIVER_STR handles multiple recipients passed as a comma-separated string
-EMAIL_RECEIVER_STR = os.environ.get("EMAIL_RECEIVER") 
-ENTREZ_EMAIL = os.environ.get("ENTREZ_EMAIL") 
+EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD")
+EMAIL_RECEIVER_STR = os.environ.get("EMAIL_RECEIVER")
 
-# Convert the receiver string to a list of emails for smtplib.sendmail()
 if EMAIL_RECEIVER_STR:
     EMAIL_RECEIVER = [e.strip() for e in EMAIL_RECEIVER_STR.split(',')]
 else:
     EMAIL_RECEIVER = []
 
-# Search Keywords (can be updated here or made an environment variable)
-KEYWORDS = ["pulmonary hypertension", "pulmonary arterial hypertension"]
+# SEARCH CONFIGURATION
+# Note: BioRxiv search is done locally. We download yesterday's papers and check these words.
+KEYWORDS = ["lung endothelial cell", "pulmonary vasculature"]
 # ---------------------
 
-def fetch_articles():
-    if not ENTREZ_EMAIL:
-        print("Error: ENTREZ_EMAIL not set.")
-        return []
-        
-    Entrez.email = ENTREZ_EMAIL
+def fetch_biorxiv_articles():
+    # 1. Calculate Date (Yesterday)
+    # The BioRxiv API uses YYYY-MM-DD format
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     
-    # Calculate date range (Yesterday)
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y/%m/%d")
-    
-    # Construct the PubMed query using OR operator for multiple terms
-    search_terms = [f'"{term}"[Title/Abstract]' for term in KEYWORDS]
-    pubmed_query_terms = " OR ".join(search_terms)
-    search_query = f'({pubmed_query_terms}) AND {yesterday}[Date - Publication]'
-    
-    print(f"Searching for articles matching: ({pubmed_query_terms}) published on {yesterday}...")
+    print(f"Fetching BioRxiv papers posted on {yesterday}...")
+
+    # 2. Call BioRxiv API
+    # Endpoint format: https://api.biorxiv.org/details/[server]/[date]/[date]/[cursor]
+    # We fetch ALL papers from yesterday, then filter for keywords below.
+    url = f"https://api.biorxiv.org/details/biorxiv/{yesterday}/{yesterday}/0"
     
     try:
-        handle = Entrez.esearch(db="pubmed", term=search_query, retmax=20)
-        record = Entrez.read(handle)
-        handle.close()
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
         
-        id_list = record["IdList"]
-        if not id_list:
-            print("No articles found in search results.")
+        # The API returns a 'collection'. If empty, no papers.
+        if 'collection' not in data or not data['collection']:
+            print("No papers found on BioRxiv for this date.")
             return []
+            
+        articles = data['collection']
+        print(f"Total papers posted yesterday: {len(articles)}. Filtering for keywords...")
 
-        # Fetch details
-        handle = Entrez.efetch(db="pubmed", id=id_list, rettype="medline", retmode="xml")
-        articles = Entrez.read(handle)
-        handle.close()
-        
     except Exception as e:
-        print(f"Error during PubMed API call: {e}")
+        print(f"Error connecting to BioRxiv API: {e}")
         return []
 
     digest_data = []
-    
-    for article in articles.get('PubmedArticle', []):
-        try:
-            medline = article['MedlineCitation']['Article']
-            title = medline.get('ArticleTitle', 'No Title')
-            journal = medline.get('Journal', {}).get('Title', 'No Journal')
-            
-            # Get PMID and create Link
-            pmid = article['MedlineCitation']['PMID']
-            link = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
 
-            # Author Logic
-            author_list = medline.get('AuthorList', [])
-            if not author_list:
-                authors = "No Authors Listed"
-            elif len(author_list) == 1:
-                authors = f"{author_list[0].get('LastName', '')} {author_list[0].get('Initials', '')}"
-            else:
-                first = f"{author_list[0].get('LastName', '')} {author_list[0].get('Initials', '')}"
-                last = f"{author_list[-1].get('LastName', '')} {author_list[-1].get('Initials', '')}"
-                authors = f"{first} ... {last}"
+    # 3. Filter Articles by Keyword
+    for article in articles:
+        try:
+            title = article.get('title', 'No Title')
+            abstract = article.get('abstract', 'No Abstract')
             
-            digest_data.append({
-                'title': title,
-                'authors': authors,
-                'journal': journal,
-                'url': link
-            })
+            # Combine title and abstract for searching (case insensitive)
+            text_to_search = (title + " " + abstract).lower()
+            
+            # Check if ANY keyword is in the text
+            if any(k.lower() in text_to_search for k in KEYWORDS):
+                
+                # --- Author Logic (First ... Last) ---
+                # BioRxiv API returns authors as a generic string usually separated by ; or ,
+                author_string = article.get('authors', '')
+                # Clean and split
+                author_list = [a.strip() for a in author_string.replace(';', ',').split(',') if a.strip()]
+                
+                if not author_list:
+                    formatted_authors = "No Authors Listed"
+                elif len(author_list) == 1:
+                    formatted_authors = author_list[0]
+                else:
+                    formatted_authors = f"{author_list[0]} ... {author_list[-1]}"
+
+                # --- Create Link ---
+                doi = article.get('doi')
+                link = f"https://doi.org/{doi}" if doi else "#"
+
+                digest_data.append({
+                    'title': title,
+                    'authors': formatted_authors,
+                    'journal': "BioRxiv", # It's always BioRxiv
+                    'url': link
+                })
+                
         except Exception as e:
             print(f"Skipping article due to parsing error: {e}")
             continue
-            
+
+    print(f"Found {len(digest_data)} articles matching keywords.")
     return digest_data
 
 def format_html_email(data):
@@ -100,36 +100,34 @@ def format_html_email(data):
     <head>
     <style>
         table {width: 100%; border-collapse: collapse; font-family: Arial, sans-serif;}
-        th {background-color: #003366; color: white; padding: 10px; text-align: left;}
+        th {background-color: #800000; color: white; padding: 10px; text-align: left;} /* Changed to Dark Red for BioRxiv distinction */
         td {border-bottom: 1px solid #ddd; padding: 8px; text-align: left; vertical-align: top;}
         tr:nth-child(even) {background-color: #f2f2f2;}
-        .title {font-weight: bold; color: #0056b3; text-decoration: none;}
+        .title {font-weight: bold; color: #b30000; text-decoration: none;}
         .title:hover {text-decoration: underline;}
         .journal {font-style: italic; color: #666;}
     </style>
     </head>
     <body>
-    <h2>Daily Dai Lab Literature Digest</h2>
+    <h2>Daily Dai Lab BioRxiv Digest</h2>
     <table>
         <tr>
-            <th style="width: 50%;">Title (Click to Read)</th>
-            <th style="width: 25%;">First & Last Author</th>
-            <th style="width: 25%;">Journal</th>
+            <th style="width: 60%;">Title (Click to Read)</th>
+            <th style="width: 40%;">First & Last Author</th>
         </tr>
     """
     
     for row in data:
         html += f"""
         <tr>
-            <td><a href=\"{row['url']}\" class=\"title\">{row['title']}</a></td>
+            <td><a href="{row['url']}" class="title">{row['title']}</a></td>
             <td>{row['authors']}</td>
-            <td class=\"journal\">{row['journal']}</td>
         </tr>
         """
         
     html += """
     </table>
-    <p><em>Generated by Dr. Zhiyu Dai using Google Gemini and Github</em></p>
+    <p><em>Generated by Dr. Zhiyu Dai using Google Gemini and BioRxiv API</em></p>
     </body>
     </html>
     """
@@ -142,9 +140,8 @@ def send_email(html_content):
 
     msg = MIMEMultipart()
     msg['From'] = EMAIL_SENDER
-    # Use a comma-separated string for the 'To' header
     msg['To'] = ", ".join(EMAIL_RECEIVER)
-    msg['Subject'] = f"Dai Lab Literature Digest: {KEYWORDS[0]} ({datetime.now().strftime('%Y-%m-%d')})"
+    msg['Subject'] = f"Dai Lab BioRxiv Digest: {datetime.now().strftime('%Y-%m-%d')}"
     
     msg.attach(MIMEText(html_content, 'html'))
     
@@ -152,23 +149,20 @@ def send_email(html_content):
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
         server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-        # Pass the list of recipients to sendmail()
         server.sendmail(EMAIL_SENDER, EMAIL_RECEIVER, msg.as_string())
         server.quit()
         print(f"Email successfully sent to {', '.join(EMAIL_RECEIVER)}")
     except Exception as e:
         print(f"Failed to send email: {e}")
-        # Detailed error handling for authentication failure
-        if 'authentication failed' in str(e).lower():
-            print("Authentication failed. Ensure you are using a correct Google App Password, not your main account password.")
 
 if __name__ == "__main__":
-    if not EMAIL_PASSWORD or not ENTREZ_EMAIL:
-        print("Agent could not run. Check that EMAIL_PASSWORD and ENTREZ_EMAIL environment variables are set.")
+    if not EMAIL_PASSWORD:
+        print("Agent could not run. Check that EMAIL_PASSWORD is set.")
     else:
-        data = fetch_articles()
+        # Run the BioRxiv fetcher instead of PubMed
+        data = fetch_biorxiv_articles()
         if data:
             html = format_html_email(data)
             send_email(html)
         else:
-            print("No new articles found for yesterday. Email not sent.")
+            print("No new articles found for yesterday matching keywords.")
