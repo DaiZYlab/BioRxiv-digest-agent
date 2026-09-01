@@ -29,20 +29,26 @@ def fetch_biorxiv_articles():
 
     # 2. Call BioRxiv API
     # Endpoint format: https://api.biorxiv.org/details/[server]/[date]/[date]/[cursor]
-    # We fetch ALL papers from yesterday, then filter for keywords below.
-    url = f"https://api.biorxiv.org/details/biorxiv/{yesterday}/{yesterday}/0"
-    
+    # The API paginates results (currently 30 records per response), so retrieve
+    # every page before filtering; otherwise relevant papers beyond page one are missed.
+    base_url = f"https://api.biorxiv.org/details/biorxiv/{yesterday}/{yesterday}"
+
     try:
-        response = requests.get(url)
-        response.raise_for_status()
-        data = response.json()
-        
-        # The API returns a 'collection'. If empty, no papers.
-        if 'collection' not in data or not data['collection']:
+        articles = []
+        cursor = 0
+        while True:
+            response = requests.get(f"{base_url}/{cursor}", timeout=30)
+            response.raise_for_status()
+            page = response.json().get('collection', [])
+            if not page:
+                break
+            articles.extend(page)
+            cursor += len(page)
+
+        if not articles:
             print("No papers found on BioRxiv for this date.")
             return []
-            
-        articles = data['collection']
+
         print(f"Total papers posted yesterday: {len(articles)}. Filtering for keywords...")
 
     except Exception as e:
@@ -136,7 +142,7 @@ def format_html_email(data):
 def send_email(html_content):
     if not EMAIL_SENDER or not EMAIL_PASSWORD or not EMAIL_RECEIVER:
         print("Error: Email credentials or receiver list not set.")
-        return
+        return False
 
     msg = MIMEMultipart()
     msg['From'] = EMAIL_SENDER
@@ -152,17 +158,21 @@ def send_email(html_content):
         server.sendmail(EMAIL_SENDER, EMAIL_RECEIVER, msg.as_string())
         server.quit()
         print(f"Email successfully sent to {', '.join(EMAIL_RECEIVER)}")
+        return True
     except Exception as e:
         print(f"Failed to send email: {e}")
+        return False
 
 if __name__ == "__main__":
     if not EMAIL_PASSWORD:
         print("Agent could not run. Check that EMAIL_PASSWORD is set.")
+        raise SystemExit(1)
     else:
         # Run the BioRxiv fetcher instead of PubMed
         data = fetch_biorxiv_articles()
         if data:
             html = format_html_email(data)
-            send_email(html)
+            if not send_email(html):
+                raise SystemExit(1)
         else:
             print("No new articles found for yesterday matching keywords.")
